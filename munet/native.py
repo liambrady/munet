@@ -1224,15 +1224,36 @@ ff02::2\tip6-allrouters
 class L3NamespaceNode(L3NodeMixin, LinuxNamespace):
     """A namespace L3 node."""
 
-    def __init__(self, name, pid=True, **kwargs):
+    def __init__(self, name, pid=True, config=None, **kwargs):
         # logging.warning(
         #     "L3NamespaceNode: name %s MRO: %s kwargs %s",
         #     name,
         #     L3NamespaceNode.mro(),
         #     kwargs,
         # )
-        super().__init__(name, pid=pid, **kwargs)
+        self.config = config if config else {}
+        super().__init__(name, pid=pid, config=config, **kwargs)
         super().pytest_hook_open_shell()
+
+    def _get_sub_args(self, cmd_list, defaults, use_pty=False, ns_only=False, **kwargs):
+        """Returns pre-command, cmd, and default keyword args.
+
+        Overrides Commander in order to insert configured enviornmental variables
+        """
+        pre_cmd_list, cmd_list, defaults = super()._get_sub_args(
+            cmd_list, defaults, use_pty, ns_only, **kwargs
+        )
+
+        if self.config and "env" in self.config and self.config["env"]:
+            config_env = {}
+            for env_var in self.config["env"].items():
+                config_env[env_var[0]] = env_var[1]["value"]
+
+            # All values in defaults should NOT be overwritten by config_env
+            config_env.update(defaults["env"])
+            defaults["env"] = config_env
+
+        return pre_cmd_list, cmd_list, defaults
 
     async def _async_delete(self):
         self.logger.debug("%s: deleting", self)
