@@ -177,6 +177,9 @@
                   "initial-password": {
                     "type": "string"
                   },
+                  "prompt": {
+                    "type": "string"
+                  },
                   "expects": {
                     "type": "array",
                     "items": {
@@ -528,6 +531,9 @@
                         "type": "string"
                       },
                       "initial-password": {
+                        "type": "string"
+                      },
+                      "prompt": {
                         "type": "string"
                       },
                       "expects": {
