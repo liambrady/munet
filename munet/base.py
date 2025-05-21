@@ -673,6 +673,7 @@ class Commander:  # pylint: disable=R0904
                 p.match.group(0),
                 spawned_re,
             )
+            p.send("\n")
             return p
 
         # Now send a CRLF to cause the prompt (or whatever else) to re-issue
