@@ -664,7 +664,7 @@ class Commander:  # pylint: disable=R0904
 
         # Do a quick check to see if we got the prompt right away, otherwise we may be
         # at a console so we send a \n to re-issue the prompt
-        index = p.expect([spawned_re, pexpect.TIMEOUT, pexpect.EOF], timeout=0.1)
+        index = p.expect([spawned_re, pexpect.TIMEOUT, pexpect.EOF], timeout=0)
         if index == 0:
             assert p.match is not None
             self.logger.debug(
