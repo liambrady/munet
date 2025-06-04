@@ -5,6 +5,7 @@
 #
 # Copyright 2021, LabN Consulting, L.L.C.
 #
+# pylint: disable=too-many-positional-arguments
 """A module that implements core functionality for library or standalone use."""
 import asyncio
 import datetime
@@ -293,7 +294,7 @@ def get_event_loop():
     try:
         watcher = asyncio.PidfdChildWatcher()  # pylint: disable=no-member
     except Exception:
-        watcher = asyncio.SafeChildWatcher()
+        watcher = asyncio.SafeChildWatcher()  # pylint: disable=deprecated-class
     loop = policy.get_event_loop()
 
     logging.debug(

@@ -5,6 +5,7 @@
 #
 # Copyright 2021, LabN Consulting, L.L.C.
 #
+# pylint: disable=too-many-positional-arguments
 """A module that implements the standalone parser."""
 import asyncio
 import importlib.resources

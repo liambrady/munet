@@ -6,6 +6,7 @@
 # Copyright (c) 2021-2022, LabN Consulting, L.L.C.
 #
 # pylint: disable=protected-access
+# pylint: disable=too-many-positional-arguments
 """A module that defines objects for standalone use."""
 import asyncio
 import base64

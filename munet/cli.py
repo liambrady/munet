@@ -5,6 +5,7 @@
 #
 # Copyright 2021, LabN Consulting, L.L.C.
 #
+# pylint: disable=too-many-positional-arguments
 """A module that implements a CLI."""
 import argparse
 import asyncio
@@ -483,6 +484,7 @@ class Completer:
         hosts = set(self.unet.hosts.keys())
         is_window_cmd = bool(tokens) and tokens[0] in cli_win_cmds
         done_set = set()
+        all_cmds = set()
         if bool(tokens):
             if text:
                 done_set = set(tokens[:-1])
