@@ -53,9 +53,9 @@ async def ping_with_loss(r, other, oifname):
 async def test_basic_ping(unet):
     unet.autonumber = True
 
-    r1 = unet.add_l3_node("r1")
-    r2 = unet.add_l3_node("r2")
-    r3 = unet.add_l3_node("r3")
+    r1 = unet.add_node("r1")
+    r2 = unet.add_node("r2")
+    r3 = unet.add_node("r3")
 
     sw1 = unet.add_network("sw1", {"ip": "auto"})
     await unet.add_native_link(sw1, r1)

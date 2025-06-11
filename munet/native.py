@@ -1242,6 +1242,13 @@ class L3NamespaceNode(L3NodeMixin, LinuxNamespace):
         #     kwargs,
         # )
         super().__init__(name, pid=pid, **kwargs)
+
+        # Create a new mounted FS for tracking nested network namespaces created
+        # by the user with `ip netns add`
+
+        # XXX why is this failing with podman???
+        self.tmpfs_mount("/run/netns")
+
         super().pytest_hook_open_shell()
 
     async def _async_delete(self):
@@ -3054,7 +3061,7 @@ ff02::2\tip6-allrouters
                 configdir=self.config_dirname,
             )
             topoconf["nodes"][name] = conf
-            self.add_l3_node(name, conf, logger=logger)
+            self.add_node(name, conf, logger=logger)
 
         # ------------------
         # Create connections
@@ -3172,7 +3179,7 @@ ff02::2\tip6-allrouters
         if "physical" not in c2 and not node2.is_vm:
             node2.set_intf_constraints(if2, **c2)
 
-    def add_l3_node(self, name, config=None, **kwargs):
+    def add_node(self, name, config=None, **kwargs):
         """Add a node to munet."""
         if config and config.get("image"):
             cls = L3ContainerNode
@@ -3184,6 +3191,7 @@ ff02::2\tip6-allrouters
             cls = HostnetNode
         else:
             cls = L3NamespaceNode
+
         return super().add_host(name, cls=cls, config=config, **kwargs)
 
     def add_network(self, name, config=None, **kwargs):
