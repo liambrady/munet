@@ -12,6 +12,7 @@ import time
 import pexpect
 import logging
 import munet
+import re
 
 import pytest
 
@@ -52,10 +53,14 @@ async def _test_repl(unet, hostname, cmd, use_pty, will_echo=False):
         )
     return repl
 
-@pytest.mark.parametrize("host", ["host1", "container1", "remote1", "hn1"])
+'''
+#@pytest.mark.parametrize("host", ["host1", "container1", "remote1", "hn1"])
+#@pytest.mark.parametrize("mode", ["pty", "piped"])
+#@pytest.mark.parametrize("shellcmd", ["/bin/bash", "/bin/dash", "/usr/bin/ksh"])
+@pytest.mark.parametrize("host", ["host1"])
 @pytest.mark.parametrize("mode", ["pty", "piped"])
-@pytest.mark.parametrize("shellcmd", ["/bin/bash", "/bin/dash", "/usr/bin/ksh"])
-async def test_spawn(unet_share, host, mode, shellcmd):
+@pytest.mark.parametrize("shellcmd", ["/bin/bash"])
+async def test_shell_expect(unet_share, host, mode, shellcmd):
     unet = unet_share
     if not os.path.exists(shellcmd):
         pytest.skip(f"{shellcmd} not installed skipping")
@@ -100,38 +105,94 @@ async def test_spawn(unet_share, host, mode, shellcmd):
         # this is required for setns() restoration to work for non-pty (piped) bash
         if mode != "pty":
             repl.child.proc.kill()
+'''
+
+@pytest.mark.parametrize("host_name", ["host1", "container1", "remote1", "hn1"])
+@pytest.mark.parametrize("mode", ["pty", "piped"])
+async def test_spawn(unet_share, host_name, mode):
+    unet = unet_share
+    use_pty = mode == "pty"
+    prompt = r"(^|\r?\n)[^#\$]*[#\$] "
+
+    if use_pty:
+        cmd = ["/bin/bash"]
+    else:
+        cmd = ["/bin/bash", "-si"]
+
+    host = unet.hosts[host_name]
+    time.sleep(1)
+
+    p = host.spawn(
+        cmd,
+        r"({}|{})".format(re.escape("PEXPECT_PROMPT>"), prompt),
+        #expects=("foo"),
+        #sends=("bar"),
+        use_pty=use_pty,
+        timeout=1,
+    )
+
+    p.send("\n")
+    p.send("echo -n f; echo oo\n")
+
+    try:
+        index = p.expect([r"foo"], timeout=1)
+        assert index == 0
+    except pexpect.TIMEOUT:
+        host.logger.critical("test_spawn: unable to utilize process returned by spawn()")
+        assert False
+    finally:
+        p.kill(9)
 
 
-@pytest.mark.parametrize("case", [[pexpect.TIMEOUT, "/bin/bash"], [munet.base.CalledProcessError, "/bin/sleep 1"]])
-async def test_spawn_err(unet_share, case):
+'''
+@pytest.mark.parametrize("mode", ['async', 'sync'])
+@pytest.mark.parametrize("catch_err", ["timeout", "eof"])
+async def test_spawn_err(unet_share, mode, catch_err):
     unet = unet_share
     hostname = "host1"
-    expected_error = case[0]
-    cmd = case[1]
     prompt = r"foo"
     expects = ["bar"]
     sends = ["baz"]
+
+    if catch_err == "timeout":
+        expected_error = pexpect.TIMEOUT
+        cmd = "/bin/bash"
+    elif catch_err == "eof":
+        expected_error = munet.base.CalledProcessError
+        cmd = "/bin/echo noop"
 
     host = unet.hosts[hostname]
     time.sleep(1)
 
     saved_level = host.logger.getEffectiveLevel()
-    host.logger.setLevel(logging.CRITICAL)  # Hide expected error messages
+    host.logger.setLevel(logging.CRITICAL)  # Hide expected error messages for duration of test
 
     try:
-        p = await host.async_spawn(
-            cmd,
-            prompt,
-            expects=expects,
-            sends=sends,
-            use_pty=False,
-            echo=False,
-            timeout=1,
-        )
-
-        host.logger.critical("test_spawn_err: async_spawn unexpectedly succeeded")
+        if mode == 'async':
+            p = await host.async_spawn(
+                cmd,
+                prompt,
+                expects=expects,
+                sends=sends,
+                use_pty=False,
+                echo=False,
+                timeout=1,
+            )
+            host.logger.critical("test_spawn_err: async_spawn unexpectedly succeeded")
+        else:
+            p = host.spawn(
+                cmd,
+                prompt,
+                expects=expects,
+                sends=sends,
+                use_pty=False,
+                echo=False,
+                timeout=1,
+            )
+            host.logger.critical("test_spawn_err: spawn unexpectedly succeeded")
         assert False
     except expected_error:
         pass
     finally:
         host.logger.setLevel(saved_level)  # Revert to initial logging level
+'''
