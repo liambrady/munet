@@ -53,13 +53,10 @@ async def _test_repl(unet, hostname, cmd, use_pty, will_echo=False):
         )
     return repl
 
-'''
-#@pytest.mark.parametrize("host", ["host1", "container1", "remote1", "hn1"])
-#@pytest.mark.parametrize("mode", ["pty", "piped"])
-#@pytest.mark.parametrize("shellcmd", ["/bin/bash", "/bin/dash", "/usr/bin/ksh"])
-@pytest.mark.parametrize("host", ["host1"])
+
+@pytest.mark.parametrize("host", ["host1", "container1", "remote1", "hn1"])
 @pytest.mark.parametrize("mode", ["pty", "piped"])
-@pytest.mark.parametrize("shellcmd", ["/bin/bash"])
+@pytest.mark.parametrize("shellcmd", ["/bin/bash", "/bin/dash", "/usr/bin/ksh"])
 async def test_shell_expect(unet_share, host, mode, shellcmd):
     unet = unet_share
     if not os.path.exists(shellcmd):
@@ -105,46 +102,46 @@ async def test_shell_expect(unet_share, host, mode, shellcmd):
         # this is required for setns() restoration to work for non-pty (piped) bash
         if mode != "pty":
             repl.child.proc.kill()
-'''
+
 
 @pytest.mark.parametrize("host_name", ["host1", "container1", "remote1", "hn1"])
 @pytest.mark.parametrize("mode", ["pty", "piped"])
-async def test_spawn(unet_share, host_name, mode):
+@pytest.mark.parametrize("shellcmd", ["/bin/bash", "/bin/dash", "/usr/bin/ksh"])
+async def test_spawn(unet_share, host_name, mode, shellcmd):
     unet = unet_share
     use_pty = mode == "pty"
     prompt = r"(^|\r?\n)[^#\$]*[#\$] "
 
     if use_pty:
-        cmd = ["/bin/bash"]
+        cmd = [shellcmd]
     else:
-        cmd = ["/bin/bash", "-si"]
+        cmd = [shellcmd, "-si"]
 
     host = unet.hosts[host_name]
     time.sleep(1)
 
     p = host.spawn(
         cmd,
-        r"({}|{})".format(re.escape("PEXPECT_PROMPT>"), prompt),
-        #expects=("foo"),
-        #sends=("bar"),
+        prompt,
         use_pty=use_pty,
         timeout=1,
     )
 
     p.send("\n")
-    p.send("echo -n f; echo oo\n")
+
+    # Sanity check, create a value in p's STDOUT that doesn't appear within p's STDIN
+    p.send("echo $(( 3 * 7 )) \n")
 
     try:
-        index = p.expect([r"foo"], timeout=1)
+        index = p.expect([r"21"], timeout=1)
         assert index == 0
     except pexpect.TIMEOUT:
-        host.logger.critical("test_spawn: unable to utilize process returned by spawn()")
+        host.logger.critical("test_spawn: Expect failed with the process returned by spawn()")
         assert False
     finally:
         p.kill(9)
 
 
-'''
 @pytest.mark.parametrize("mode", ['async', 'sync'])
 @pytest.mark.parametrize("catch_err", ["timeout", "eof"])
 async def test_spawn_err(unet_share, mode, catch_err):
