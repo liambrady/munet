@@ -112,7 +112,7 @@ async def test_spawn(unet_share, host_name, mode, shellcmd):
     unet = unet_share
     if not os.path.exists(shellcmd):
         pytest.skip(f"{shellcmd} not installed skipping")
-    
+
     use_pty = mode == "pty"
     prompt = r"(^|\r?\n)[^#\$]*[#\$] "
 
@@ -157,10 +157,10 @@ async def test_spawn_err(unet_share, mode, catch_err):
 
     if catch_err == "timeout":
         expected_error = pexpect.TIMEOUT
-        cmd = "/bin/bash"
+        cmd = ["/bin/bash"]
     elif catch_err == "eof":
         expected_error = munet.base.CalledProcessError
-        cmd = "/bin/echo noop"
+        cmd = ["/bin/sleep", "1"]  # A command that exits instantly results in a broken pipe
 
     host = unet.hosts[hostname]
     time.sleep(1)
