@@ -52,7 +52,6 @@ async def _test_repl(unet, hostname, cmd, use_pty, will_echo=False):
         )
     return repl
 
-
 @pytest.mark.parametrize("host", ["host1", "container1", "remote1", "hn1"])
 @pytest.mark.parametrize("mode", ["pty", "piped"])
 @pytest.mark.parametrize("shellcmd", ["/bin/bash", "/bin/dash", "/usr/bin/ksh"])
@@ -127,7 +126,7 @@ async def test_spawn_err(unet_share, case):
             sends=sends,
             use_pty=False,
             echo=False,
-            timeout=2,
+            timeout=1,
         )
 
         host.logger.critical("test_spawn_err: async_spawn unexpectedly succeeded")
