@@ -43,6 +43,9 @@ test: test-validate ci-lint
 	sudo -E $(POETRYRUN) mutest tests
 	sudo -E $(POETRYRUN) pytest -s -v --cov=munet --cov-report=xml tests
 
+pytest:
+	sudo -E $(POETRYRUN) pytest -s -v --cov=munet --cov-report=xml tests/qemu/config/initial-cmd/test_qemu_cmd.py
+
 clean:
 	rm -f *.yang coverage.xml err.out ox-rfc.el
 	rm -rf .testtmp/schema
