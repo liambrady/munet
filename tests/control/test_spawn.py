@@ -107,8 +107,12 @@ async def test_shell_expect(unet_share, host, mode, shellcmd):
 @pytest.mark.parametrize("host_name", ["host1", "container1", "remote1", "hn1"])
 @pytest.mark.parametrize("mode", ["pty", "piped"])
 @pytest.mark.parametrize("shellcmd", ["/bin/bash", "/bin/dash", "/usr/bin/ksh"])
+# As of 6-24-25, spawn is unused in the munet API. It is still maintained for the future
 async def test_spawn(unet_share, host_name, mode, shellcmd):
     unet = unet_share
+    if not os.path.exists(shellcmd):
+        pytest.skip(f"{shellcmd} not installed skipping")
+    
     use_pty = mode == "pty"
     prompt = r"(^|\r?\n)[^#\$]*[#\$] "
 
@@ -192,4 +196,3 @@ async def test_spawn_err(unet_share, mode, catch_err):
         pass
     finally:
         host.logger.setLevel(saved_level)  # Revert to initial logging level
-'''
