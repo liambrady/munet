@@ -9,6 +9,9 @@
 import logging
 import os
 import time
+import pexpect
+import logging
+import munet
 
 import pytest
 
@@ -98,3 +101,38 @@ async def test_spawn(unet_share, host, mode, shellcmd):
         # this is required for setns() restoration to work for non-pty (piped) bash
         if mode != "pty":
             repl.child.proc.kill()
+
+
+@pytest.mark.parametrize("case", [[pexpect.TIMEOUT, "/bin/bash"], [munet.base.CalledProcessError, "/bin/sleep 1"]])
+async def test_spawn_err(unet_share, case):
+    unet = unet_share
+    hostname = "host1"
+    expected_error = case[0]
+    cmd = case[1]
+    prompt = r"foo"
+    expects = ["bar"]
+    sends = ["baz"]
+
+    host = unet.hosts[hostname]
+    time.sleep(1)
+
+    saved_level = host.logger.getEffectiveLevel()
+    host.logger.setLevel(logging.CRITICAL)  # Hide expected error messages
+
+    try:
+        p = await host.async_spawn(
+            cmd,
+            prompt,
+            expects=expects,
+            sends=sends,
+            use_pty=False,
+            echo=False,
+            timeout=2,
+        )
+
+        host.logger.critical("test_spawn_err: async_spawn unexpectedly succeeded")
+        assert False
+    except expected_error:
+        pass
+    finally:
+        host.logger.setLevel(saved_level)  # Revert to initial logging level
