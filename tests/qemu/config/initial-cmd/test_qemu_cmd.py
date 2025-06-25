@@ -44,7 +44,8 @@ async def setup_images(rundir_module):
                 f'ssh-keygen -b 2048 -t rsa -f {rdir}/root-key -q -N ""'
             )
         pubkey = commander.cmd_raises(f"cat {rdir}/root-key.pub").strip()
-        user_data = f"""#cloud-config
+        for node in ["r1", "r2"]:
+            user_data = f"""#cloud-config
 disable_root: 0
 ssh_pwauth: 1
 users:
@@ -53,18 +54,18 @@ users:
     plain_text_passwd: foobar
     ssh_authorized_keys:
       - "{pubkey}"
-hostname: r1
+hostname: {node}
 runcmd:
   - systemctl enable serial-getty@ttyS1.service
   - systemctl start serial-getty@ttyS1.service
   - systemctl enable serial-getty@ttyS2.service
   - systemctl start serial-getty@ttyS2.service
 """
-        commander.cmd_raises(f"cat > {rdir}/user-data.yaml", stdin=user_data)
-        commander.cmd_raises(
-            "cloud-localds -N netcfg.yaml -d raw"
-            f" {rdir}/r1-config-cmd.img {rdir}/user-data.yaml"
-        )
+            commander.cmd_raises(f"cat > {rdir}/{node}-user-data.yaml", stdin=user_data)
+            commander.cmd_raises(
+                f"cloud-localds -N {node}-netcfg.yaml -d raw"
+                f" {rdir}/{node}-config-cmd.img {rdir}/{node}-user-data.yaml"
+            )
     except Exception:
         pytest.fail("Failed to fetch/setup qemu images")
 
@@ -73,13 +74,22 @@ async def test_qemu_up(unet):
     r1 = unet.hosts["r1"]
     output = r1.monrepl.cmd_nostatus("info status")
     assert output == "VM status: running"
+    r2 = unet.hosts["r2"]
+    output = r2.monrepl.cmd_nostatus("info status")
+    assert output == "VM status: running"
 
 
 async def test_config_cmd(unet):
     h1 = unet.hosts["h1"]
     r1 = unet.hosts["r1"]
+    r2 = unet.hosts["r2"]
 
     output = r1.conrepl.cmd_raises("ls")
     logging.debug(output)
-    assert 'foo' in output  # from initial-cmd
+    assert 'foo' in output  # from cmd-file
     assert 'bar' in output  # from initial-cmd-file
+
+    output = r2.conrepl.cmd_raises("ls")
+    logging.debug(output)
+    assert 'foo' in output  # from cmd
+    assert 'bar' in output  # from initial-cmd

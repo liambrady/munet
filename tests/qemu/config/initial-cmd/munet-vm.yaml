@@ -12,16 +12,25 @@ topology:
         - to: "mgmt0"
         - to: "r1"
           ip: 10.0.1.1/24
+        - to: "r2"
+          ip: 10.0.2.1/24
     - name: r1
-      kind: disk-linux
+      kind: disk-linux-from-file
       cmd-file: "cmd-qemu.sh"
       connections:
         - to: "mgmt0"
         - to: "h1"
           ip: 10.0.1.2/24
+    - name: r2
+      kind: disk-linux
+      cmd: "touch ~/foo"
+      connections:
+        - to: "mgmt0"
+        - to: "h1"
+          ip: 10.0.2.2/24
 
 kinds:
-  - name: disk-linux
+  - name: disk-linux-from-file
     ssh-identity-file: "%RUNDIR%/../root-key"
     ssh-user: "root"
     qemu:
@@ -36,6 +45,22 @@ kinds:
       memory: "1G"
       kvm: true
       ncpu: 2
+  - name: disk-linux
+    ssh-identity-file: "%RUNDIR%/../root-key"
+    ssh-user: "root"
+    qemu:
+      disk-template: "%CONFIGDIR%/ubuntu-tpl.qcow2"
+      cloud-init: true
+      cloud-init-disk: "%RUNDIR%/../%NAME%-config-cmd.img"
+      initial-cmd: "touch ~/bar"
+      console:
+        user: "root"
+        password: "foobar"
+        timeout: 3600
+      memory: "1G"
+      kvm: true
+      ncpu: 2
+
 
 cli:
   commands:
@@ -53,7 +78,7 @@ cli:
       top-level: true
     - name: ssh
       exec: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %IPADDR%"
-      kinds: ["linux"]
+      kinds: ["disk-linux", "disk-linux-from-file"]
       format: "ssh NODE [NODE ...]"
       top-level: true
       new-window: true

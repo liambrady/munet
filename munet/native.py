@@ -1504,10 +1504,7 @@ class L3ContainerNode(L3NodeMixin, LinuxNamespace):
                     f"--volume={shebang_cmdpath}:/tmp/{script_name}.shebang",
                 ]
         if self.config.get("cmd-file", "").strip():
-            self.logger.critical(
-                "%s: cmd-file is not supported for podman yet. Ignoring",
-                self.name,
-            )
+            raise NotImplementedError("cmd-file is not yet supported for podman nodes")
         cmd = self.config.get("cmd", "").strip()
 
         # See if we have a custom update for this `kind`
