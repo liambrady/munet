@@ -8,6 +8,7 @@
 """A module that implements core functionality for library or standalone use."""
 
 import asyncio
+import concurrent.futures
 import datetime
 import errno
 import ipaddress
@@ -22,6 +23,8 @@ import subprocess
 import sys
 import tempfile
 import time as time_mod
+import threading
+import queue
 
 from collections import defaultdict
 from pathlib import Path
@@ -321,6 +324,16 @@ def ensure_non_threaded_event_watcher():
     policy.set_event_loop(loop)
     assert asyncio.get_event_loop_policy().get_child_watcher() is watcher
 
+def run_background_async_loop(loop):
+    logging.info("Started background cmd async thread")
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+    except Exception as error:
+        logging.error("Background cmd async thread error: %s", str(error))
+    finally:
+        loop.close()
+    logging.info("Closed background cmd async thread")
 
 class Commander:  # pylint: disable=R0904
     """An object that can execute commands."""
@@ -335,7 +348,7 @@ class Commander:  # pylint: disable=R0904
             logger: logger to use for logging commands a defualt is supplied if this
                 is None
             unet: unet that owns this object, only used by Commander in run_in_window,
-                otherwise can be None.
+                and for background commands, otherwise can be None.
         """
         # del kwargs  # deal with lint warning
         # logging.warning("Commander: name %s kwargs %s", name, kwargs)
@@ -345,6 +358,11 @@ class Commander:  # pylint: disable=R0904
         self.deleting = False
         self.last = None
         self.exec_paths = {}
+
+        # For managing background processes
+        self.async_loop = None
+        self.async_thread = None
+        self.async_cmds = {}
 
         # For running commands one time only (deals with asyncio)
         self.cmd_once_done = {}
@@ -437,28 +455,36 @@ class Commander:  # pylint: disable=R0904
         """Check if path exists."""
         return self.test("-e", path)
 
-    async def cleanup_pid(self, pid, kill_pid=None):
+    async def cleanup_pid(self, pid, kill_pid=None, wait_sec=30, is_pgroup=False):
         """Signal a pid to exit with escalating forcefulness."""
         if kill_pid is None:
             kill_pid = pid
 
         for sn in (signal.SIGHUP, signal.SIGKILL):
             self.logger.debug(
-                "%s: %s %s (wait %s)", self, signal.Signals(sn).name, kill_pid, pid
+                "%s: %s %s (wait %s) %s",
+                self,
+                signal.Signals(sn).name,
+                kill_pid,
+                pid,
+                is_pgroup,
             )
 
-            os.kill(kill_pid, sn)
+            if is_pgroup:
+                os.killpg(kill_pid, sn)
+            else:
+                os.kill(kill_pid, sn)
 
             # No need to wait after this.
             if sn == signal.SIGKILL:
                 return
 
             # try each signal, waiting 15 seconds for exit before advancing
-            wait_sec = 30
             self.logger.debug("%s: waiting %ss for pid to exit", self, wait_sec)
             for _ in Timeout(wait_sec):
                 try:
-                    status = os.waitpid(pid, os.WNOHANG)
+                    # waitpid accepts negative values as process groups
+                    status = os.waitpid(-pid if is_pgroup else pid, os.WNOHANG)
                     if status == (0, 0):
                         await asyncio.sleep(0.1)
                     else:
@@ -1115,7 +1141,7 @@ class Commander:  # pylint: disable=R0904
         return self._cmd_status_finish(p, cmds, actual_cmd, o, e, raises, warn)
 
     async def _async_cmd_status(
-        self, cmds, raises=False, warn=True, stdin=None, text=None, **kwargs
+        self, cmds, raises=False, warn=True, stdin=None, text=None, proc=None, **kwargs
     ):
         """Execute a command."""
         timeout = None
@@ -1124,9 +1150,14 @@ class Commander:  # pylint: disable=R0904
             del kwargs["timeout"]
 
         pinput, stdin = Commander._cmd_status_input(stdin)
+        method = "background_cmd_start" if proc else "async_cmd_status"
         p, actual_cmd = await self._async_popen(
-            "async_cmd_status", cmds, stdin=stdin, **kwargs
+            method, cmds, stdin=stdin, **kwargs
         )
+
+        # If a background process, then the pid must be known by the scheduler
+        if proc is not None:
+            proc.put(p)
 
         if text is False:
             encoding = None
@@ -1145,6 +1176,76 @@ class Commander:  # pylint: disable=R0904
             o = o.decode(encoding) if o is not None else o
             e = e.decode(encoding) if e is not None else e
         return self._cmd_status_finish(p, cmds, actual_cmd, o, e, raises, warn)
+
+    def _background_cmd_start_status(self, cmds, **kwargs):
+        """Schedules execution of a background command."""
+        proc = queue.Queue(maxsize=1)
+        unet = self.unet if self.unet is not None else self
+        if unet.async_loop is not None:
+            future = asyncio.run_coroutine_threadsafe(
+                self._async_cmd_status(
+                    cmds,
+                    proc=proc,
+                    warn=False,
+                    start_new_session=True,
+                    **kwargs
+                ),
+                unet.async_loop,
+            )
+        else:
+            raise Exception("Async command loop doesn't exist")
+
+        # Block until background cmd has started
+        pid = -1
+        try:
+            p = proc.get(timeout=60)
+            pid = p.pid
+            unet.async_cmds[pid] = (future, p)
+            self.logger.debug("%s: Background command started under pid %s", self, pid)
+        except queue.Empty:
+            self.logger.error("%s: Failed to fetch pid of background command", self)
+            raise
+
+        return pid
+
+    def _background_cmd_end_status(self, pid, **kwargs):
+        """Ends a background command with status."""
+        unet = self.unet if self.unet is not None else self
+        (cmd_future, _) = unet.async_cmds.get(pid, None)
+        if cmd_future is None:
+            self.logger.error(
+                "%s: Failed to find future for background process: %s",
+                self,
+                pid,
+            )
+            raise Exception(f"Process {pid} not found")
+
+        del unet.async_cmds[pid]
+
+        timeout = None
+        if "timeout" in kwargs:
+            timeout = kwargs["timeout"]
+            del kwargs["timeout"]
+
+        # It is always safe to cleanup pid on the internal asyncio loop
+        if unet.async_loop is not None:
+            kill_future = asyncio.run_coroutine_threadsafe(
+                self.cleanup_pid(pid, wait_sec=timeout, is_pgroup=True),
+                unet.async_loop,
+            )
+            try:
+                kill_future.result()
+            except ProcessLookupError:
+                # This command already ended.
+                pass
+        else:
+            raise Exception("Async command loop doesn't exist")
+
+        try:
+            # Wait just a little extra just in case
+            return cmd_future.result(timeout=2)
+        except concurrent.futures.TimeoutError:
+            return (-1, None, None)
 
     def _get_cmd_as_list(self, cmd):
         """Given a list or string return a list form for execution.
@@ -1341,6 +1442,63 @@ class Commander:  # pylint: disable=R0904
         _, stdout, _ = await self._async_cmd_status(
             cmd, raises=True, ns_only=True, **kwargs
         )
+        return stdout
+
+    def background_cmd_start(self, cmd, **kwargs):
+        """Run given command in the background.
+
+        Args:
+            cmd: `str` or `list` of the command to execute.  If a string is given
+                it is run using a shell, otherwise the list is executed directly
+                as the binary and arguments.
+            **kwargs: kwargs is eventually passed on to create_subprocess_exec. If
+                `cmd` is a string then will be invoked with `bash -c`, otherwise
+                `cmd` is a list and will be invoked without a shell.
+
+        Returns:
+            (pid) is returned
+            pid: the process id of the background command
+        """
+        return self._background_cmd_start_status(cmd, **kwargs)
+
+    def background_cmd_start_nsonly(self, pid, **kwargs):
+        # Make sure the command runs on the host and not in any container.
+        return self._background_cmd_start_status(pid, ns_only=True, **kwargs)
+
+    def background_cmd_end_status(self, pid, **kwargs):
+        """End a running background command, returning status and outputs.
+
+        Args:
+            pid: process id of the background process
+            **kwargs: kwargs containing flags such as `warn` or `raise`
+
+        Returns:
+            (status, output, error) are returned
+            status: the returncode of the command.
+            output: stdout as a string from the command.
+            error: stderr as a string from the command.
+        """
+        #
+        # This method serves as the basis for all derived background cmd variations, so
+        # to override background cmd behavior simply override this function and *not*
+        # the other variations, unless you are changing only that variation's behavior
+        #
+        return self._background_cmd_end_status(pid, **kwargs)
+
+    def background_cmd_raises(self, pid, **kwargs):
+        """End a background command. Raise an exception on errors.
+
+        Args:
+            pid: process id of the background process
+            **kwargs: kwargs containing flags such as `warn` or `raise`
+
+        Returns:
+            output: stdout as a string from the command.
+
+        Raises:
+            CalledProcessError: on non-zero exit status
+        """
+        _, stdout, _ = self._background_cmd_end_status(pid, raises=True, **kwargs)
         return stdout
 
     def cmd_legacy(self, cmd, **kwargs):
@@ -1587,6 +1745,35 @@ class Commander:  # pylint: disable=R0904
             self.cmd_once_done[cmd] = commander.cmd_raises(cmd, **kwargs)
         return self.cmd_once_done[cmd]
 
+    async def _async_build(self):
+        """Create this objects at-build time resources.
+
+        This is the actual implementation of the resource creation, each class
+        should invoke `super()._async_build() and then proceed to create it's own
+        resources. See other examples in `base.py` or `native.py`
+        """
+        # It is not guarenteed that munet is running in an event loop after being built,
+        # so instead, we manage our own.
+        self.async_loop = asyncio.new_event_loop()
+        self.async_thread = threading.Thread(
+            target=run_background_async_loop,
+            args=(self.async_loop,),
+        )
+        self.async_thread.start()
+
+        self.logger.info("%s: built", self)
+
+    async def async_build(self):
+        """Start Building the Commander (or derived object).
+
+        The actual implementation for any class should be in `_async_build`
+        new derived classes should look at the documentation for that function.
+        """
+        try:
+            await self._async_build()
+        except Exception as error:
+            self.logger.error("%s: error while building: %s", self, error)
+
     def delete(self):
         """Calls self.async_delete within an exec loop."""
         asyncio.run(self.async_delete())
@@ -1600,6 +1787,49 @@ class Commander:  # pylint: disable=R0904
         invoke `super()._async_delete() without catching any exceptions raised
         therein. See other examples in `base.py` or `native.py`
         """
+        if self.async_loop is not None:
+
+            # Terminate incomplete background commands at the same time
+            tasks = [
+                asyncio.create_task(self.cleanup_pid(pid, is_pgroup=True))
+                for pid in self.async_cmds
+            ]
+            self.logger.debug("%s: killing %s background cmds", self, len(tasks))
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Check futures individually to better support logging
+            for pid, (future, _) in list(self.async_cmds.items()):
+                try:
+                    self.logger.debug(
+                        "%s: awaiting kill over background cmd with pid %s",
+                        self,
+                        pid,
+                    )
+                    async_future = asyncio.wrap_future(future)
+                    _ = await asyncio.wait_for(async_future, timeout=2)
+                    continue
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        "%s: background cmd didn't exit: %s",
+                        self,
+                        pid,
+                    )
+                except Exception as error:
+                    self.logger.error("%s: background cmd error %s", self, str(error))
+                finally:
+                    del self.async_cmds[pid]
+
+
+            # Signal the loop that it should stop. Any tasks remaining on the
+            # loop are allowed to finish. However, we just performed the best-effort
+            # cancellation routine, so nothing should be left on it.
+            self.async_loop.call_soon_threadsafe(self.async_loop.stop)
+
+        if self.async_thread is not None:
+            self.async_thread.join(timeout=5)
+            if self.async_thread.is_alive():
+                self.logger.error("%s: failed to join background cmd thread", self)
+
         self.logger.info("%s: deleted", self)
 
     async def async_delete(self):

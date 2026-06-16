@@ -173,7 +173,12 @@ def rundir_module():
 
 
 async def _unet_impl(
-    _rundir, _pytestconfig, unshare=None, top_level_pidns=None, param=None
+    _rundir,
+    _pytestconfig,
+    unshare=None,
+    top_level_pidns=None,
+    param=None,
+    skip_delete=False,
 ):
     try:
         # Default is not to unshare inline if not specified otherwise
@@ -223,8 +228,9 @@ async def _unet_impl(
     except Exception as error:
         logging.error("unet fixture: yield unet unexpected exception: %s", error)
 
-    logging.debug("unet fixture: module done, deleting unet")
-    await _unet.async_delete()
+    if not skip_delete:
+        logging.debug("unet fixture: module done, deleting unet")
+        await _unet.async_delete()
 
     # No one ever awaits these so cancel them
     logging.debug("unet fixture: cleanup")
@@ -249,6 +255,33 @@ async def unet(request, rundir_module, pytestconfig):  # pylint: disable=W0621
     sdir = os.path.dirname(os.path.realpath(request.fspath))
     async with achdir(sdir, "unet fixture"):
         async for x in _unet_impl(rundir_module, pytestconfig, param=param):
+            yield x
+
+
+@pytest.fixture(scope="function")
+async def unet_teardown(request, rundir_module, pytestconfig):  # pylint: disable=W0621
+    """A unet creating fixture.
+
+    This teardown variant does not explicitely clean the unet topology after running to
+    completion. The test writer must explicitely make the 'await unet.async_delete()'
+    call during the test, after which they can inspect the resulting state
+
+    The request param is either the basename of the config file or a tuple of the form:
+    (basename, unshare, top_level_pidns), with the second and third elements boolean and
+    optional, defaulting to False, True.
+
+    Note: This is NOT a module-level fixture. The topology exiss only for the single
+    function scope.
+    """
+    param = request.param if hasattr(request, "param") else None
+    sdir = os.path.dirname(os.path.realpath(request.fspath))
+    async with achdir(sdir, "unet_teardown fixture"):
+        async for x in _unet_impl(
+                rundir_module,
+                pytestconfig,
+                param=param,
+                skip_delete=True,
+        ):
             yield x
 
 
