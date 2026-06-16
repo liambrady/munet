@@ -3199,6 +3199,7 @@ ff02::2\tip6-allrouters
             return
 
         self.built = True
+        await super()._async_build()
 
         # Allow for all networks to be auto-numbered
         topoconf = self.topoconf
