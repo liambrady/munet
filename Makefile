@@ -45,6 +45,12 @@ test: test-validate ci-lint
 	$(UVRUN) sudo -E mutest tests
 	$(UVRUN) sudo -E pytest -s -v --cov=munet --cov-report=xml tests
 
+mutest:
+	$(UVRUN) sudo -E mutest tests
+
+pytest:
+	$(UVRUN) sudo -E pytest -s -v --cov=munet --cov-report=xml tests/background
+
 clean:
 	rm -f *.yang coverage.xml err.out ox-rfc.el
 	rm -rf .testtmp/schema
