@@ -53,6 +53,8 @@ from .config import find_with_kv
 from .config import merge_kind_config
 from .exceptions import MunetError
 from .exceptions import MunetConfigError
+from .lifecycle import StageState
+from .lifecycle import resolve_lifecycle
 from .watchlog import WatchLog
 
 AUTO_LOOPBACK_IPV4_BASE = ipaddress.ip_interface("10.255.0.0/32")
@@ -263,7 +265,7 @@ class NodeMixin:
         L3NodeMixin.next_ord = n + 1
         return n
 
-    def __init__(self, *args, config=None, **kwargs):
+    def __init__(self, *args, config=None, lifecycle_stages=None, container_boot=None, **kwargs):
         """Create a Node."""
         super().__init__(*args, **kwargs)
 
@@ -281,6 +283,23 @@ class NodeMixin:
         self.rundir = self.unet.rundir.joinpath(self.name)
         commander.cmd_raises(f"rm -rf {self.rundir}")
         commander.cmd_raises(f"mkdir -p {self.rundir}")
+
+        if lifecycle_stages is None:
+            context = self._lifecycle_context()
+            lifecycle_stages, container_boot = resolve_lifecycle(
+                config, {}, config_subst(config, **context), **context
+            )
+        self.lifecycle_stages = tuple(lifecycle_stages)
+        self.stage_states = [
+            StageState(stage, number)
+            for number, stage in enumerate(self.lifecycle_stages, 1)
+        ]
+        self.container_boot = container_boot
+
+    def _lifecycle_context(self):
+        return dict(
+            name=self.name, rundir=self.rundir, configdir=self.unet.config_dirname
+        )
 
     def _shebang_prep(self, config_key, is_file=False):
         shell_cmd = "/bin/bash"  # default shell
@@ -3244,23 +3263,26 @@ ff02::2\tip6-allrouters
             topoconf["networks"][name] = conf
             self.add_network(name, conf, logger=logger)
 
-        for name, conf in config_to_dict_with_key(topoconf, "nodes", "name").items():
-            if kind := conf.get("kind"):
-                if kconf := kinds[kind]:
-                    conf = merge_kind_config(kconf, conf)
+        for name, node_conf in config_to_dict_with_key(topoconf, "nodes", "name").items():
+            kind = node_conf.get("kind")
+            kind_conf = kinds[kind] if kind else {}
+            conf = merge_kind_config(kind_conf, node_conf) if kind_conf else dict(node_conf)
 
-            config_to_dict_with_key(
-                conf, "env", "name"
-            )  # convert list of env objects to dict
-
-            conf = config_subst(
-                conf,
+            config_to_dict_with_key(conf, "env", "name")
+            context = dict(
                 name=name,
                 rundir=os.path.join(self.rundir, name),
                 configdir=self.config_dirname,
             )
+            conf = config_subst(conf, **context)
+            stages, container_boot = resolve_lifecycle(
+                node_conf, kind_conf, conf, **context
+            )
             topoconf["nodes"][name] = conf
-            self.add_l3_node(name, conf, logger=logger)
+            self.add_l3_node(
+                name, conf, lifecycle_stages=stages, container_boot=container_boot,
+                logger=logger,
+            )
 
         # ------------------
         # Create connections
