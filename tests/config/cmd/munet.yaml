@@ -12,4 +12,3 @@ topology:
       cmd-file: "pycmd.py"
     - name: h-shcmd-file-noshebang
       cmd-file: "cmd-noshebang.sh"
-
