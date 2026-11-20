@@ -155,6 +155,7 @@ Tree diagram for node config::
         +--rw cap-remove*          string
         +--rw cmd?                 string
         +--rw cmd-file?            string
+        +--rw container-cmd?       string
         +--rw cleanup-cmd?         string
         +--rw ready-cmd?           string
         +--rw ready-timeout?       uint32
@@ -208,8 +209,71 @@ to use the same interpreter as specified by the file's shebang (again, defaultin
 to ``/bin/bash`` if none is found). Setting ``shell`` overrides this behavior to use
 a specific configured interpreter instead.
 
-The ``ready-cmd`` and ``ready-timeout`` provide customization for how to check if a
-node is ready and for how long to wait for it be ready.
+Lifecycle commands
+""""""""""""""""""
+
+By default a node has one lifecycle stage with the final values after merging
+its kind and node configuration. Set ``merge: [commands]`` on a kind to run the
+effective kind's hooks in one stage, followed by the node's own hooks in a second
+stage. Each stage uses its own ``shell`` or the backend default. The stage shell
+only applies to lifecycle hooks. Ordinary CLI and programmatic commands keep
+their existing execution behavior.
+
+.. code-block:: yaml
+
+   kinds:
+     - name: router
+       merge: [commands]
+       cmd: start-kind-service
+       ready-cmd: check-kind-service
+       cleanup-cmd: stop-kind-service
+
+   topology:
+     nodes:
+       - name: r1
+         kind: router
+         cmd: start-node-service
+         ready-cmd: check-node-service
+         cleanup-cmd: stop-node-service
+
+A stage reaches readiness when its ``ready-cmd`` returns zero, or immediately
+after startup dispatch when no readiness check is configured. Each check has
+its own ``ready-timeout``, which defaults to 30 seconds. Startup exit status is
+reported for diagnostics. Namespace and container stage commands may continue
+running while subsequent stages start. Nodes advance independently. QEMU runs
+its hooks synchronously through the guest console, and its first-time disk
+initialization commands run before the lifecycle stages. Guest readiness checks
+require a console that can report command exit status.
+
+A stage without ``cmd`` or ``cmd-file`` can still check readiness and run cleanup.
+At teardown, munet runs ``cleanup-cmd`` for each entered stage in reverse order,
+while the namespace, container, or VM is still available. Stage stdout and
+stderr for namespace and container execution are written to ``cmd.out`` and
+``cmd.err`` in single-stage mode, or to ``cmd.N.out`` and ``cmd.N.err`` in composed
+mode, where N is the one-based stage number. QEMU uses its console logs.
+
+Podman boot
+"""""""""""
+
+Set ``container-cmd`` to choose the command passed to ``podman run``. It uses the
+merged node ``shell`` and the usual kind-to-node precedence. An explicitly empty
+``container-cmd: ""`` selects the image default and leaves all lifecycle commands
+available to run via ``podman exec``.
+
+For compatibility, if ``container-cmd`` is omitted, munet uses the first stage
+with a configured startup command for container boot. This selects the
+effective kind's command before the node's in composed mode and the final merged
+command in single-stage mode. A configured ``cmd-file`` takes precedence over
+``cmd`` in each stage. Munet warns when it uses this fallback and consumes the
+selected startup command once, preserving that stage's readiness and cleanup
+hooks. With no eligible startup command, the image default is used. Relative
+Podman ``cmd-file`` paths are resolved from the topology configuration directory.
+Container boot logs are written to ``container.out`` and ``container.err``.
+
+Container launch waits for Podman to accept exec requests. A daemon started by
+the boot command may still be initializing when the first lifecycle stage
+starts. To gate a later stage on that daemon, use an earlier readiness-only
+stage with ``ready-cmd``.
 
 Connections
 """""""""""
