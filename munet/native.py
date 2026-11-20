@@ -316,55 +316,63 @@ class NodeMixin:
             return hook
         return f"{hook}.{state.number}"
 
-    def _lifecycle_script(self, stage, hook, configdir=None):
-        """Get a command body and interpreter, respecting startup file precedence."""
-        shell = stage.shell
-        if hook == "cmd" and (stage.cmd_file or "").strip():
-            path = Path(stage.cmd_file.strip())
-            if configdir is not None:
-                path = Path(configdir) / path
-            lines = path.read_text(encoding="ascii").splitlines(keepends=True)
-            if lines and lines[0].startswith("#!"):
-                shebang = lines.pop(0)[2:].strip()
-                if shell is None:
-                    shell = shebang
-            body = "".join(lines).strip()
-            body_needs_subst = True
+    def _shebang_prep(
+        self, config_key, stage, script_name, *, configdir=None, console=False
+    ):
+        """Prepare command arguments and return the host path for generated scripts.
+
+        Console commands are returned as a single item so the guest can interpret
+        the original command text.
+        """
+        shell_cmd = "/bin/bash"  # default shell
+        cmd_file = (stage.cmd_file or "").strip() if config_key == "cmd" else ""
+        if not cmd_file:
+            cmd = (getattr(stage, config_key.replace("-", "_")) or "").strip()
         else:
-            body = (getattr(stage, hook.replace("-", "_")) or "").strip()
-            body_needs_subst = False
+            if configdir is not None:
+                cmd_file = os.path.join(configdir, cmd_file)
+            with open(cmd_file, "r", encoding="ascii") as f:
+                lines = f.readlines()
+                # We want to avoid overwriting the shebang if it already exists
+                if lines and lines[0].startswith("#!"):
+                    shell_cmd = lines.pop(0)[2:].strip()
+                cmd = "".join(lines).strip()
 
-        if shell is None or shell is True:
-            shell = "/bin/bash"
-        return body, shell, body_needs_subst
-
-    def _write_lifecycle_script(self, name, body, shell):
-        path = self.rundir / f"{name}.shebang"
-        path.write_text(f"#!{shell}\n{body}\n", encoding="utf-8")
-        path.chmod(0o755)
-        return path
-
-    def _prepare_lifecycle_args(self, stage, hook, name, configdir=None):
-        """Return argv and the host script path if the command uses a script."""
-        body, shell, subst = self._lifecycle_script(stage, hook, configdir)
-        if not body:
+        if not cmd:
             return [], None
-        if shell:
-            if subst:
-                body = config_subst(body, **self._lifecycle_context())
-            path = self._write_lifecycle_script(name, body, shell)
-            return [str(path)], path
 
-        args = shlex.split(body)
-        if subst:
-            args = config_subst(args, **self._lifecycle_context())
-        return args, None
+        # shell_cmd is a union and can be boolean or string
+        if stage.shell is not None:
+            shell_cmd = stage.shell
+        if not isinstance(shell_cmd, str):
+            if shell_cmd:
+                # i.e., "shell: true"
+                shell_cmd = "/bin/bash"
+            else:
+                # i.e., "shell: false"
+                shell_cmd = ""
+
+        if shell_cmd:
+            if cmd_file:
+                cmd = config_subst(cmd, **self._lifecycle_context())
+            cmd += "\n"
+            cmdpath = self.rundir / f"{script_name}.shebang"
+            with open(cmdpath, mode="w+", encoding="utf-8") as cmdfile:
+                cmdfile.write(f"#!{shell_cmd}\n")
+                cmdfile.write(cmd)
+            cmdpath.chmod(0o755)
+            return [str(cmdpath)], cmdpath
+
+        cmds = [cmd] if console else shlex.split(cmd)
+        if cmd_file:
+            cmds = config_subst(cmds, **self._lifecycle_context())
+        return cmds, None
 
     def _stage_args(self, state, hook):
-        args, _ = self._prepare_lifecycle_args(
-            state.stage, hook, self._stage_filename(state, hook)
+        cmds, _ = self._shebang_prep(
+            hook, state.stage, self._stage_filename(state, hook)
         )
-        return args
+        return cmds
 
     @staticmethod
     async def _finish_spawn(task):
@@ -455,23 +463,26 @@ class NodeMixin:
                 err.read().decode(errors="replace"),
             )
 
-    async def _run_stage_hook(self, state, hook):
-        if args := self._stage_args(state, hook):
-            rc, out, err = await self._lifecycle_cmd_status(args)
-            log = (
-                self.logger.warning
-                if rc and hook == "cleanup-cmd"
-                else self.logger.debug
-            )
-            log(
-                "%s: lifecycle stage %s %s: %s",
-                self,
-                state.number,
-                hook,
-                cmd_error(rc, out, err),
-            )
-            return rc
-        return 0
+    async def _async_shebang_cmd(self, state, config_key):
+        cmds = self._stage_args(state, config_key)
+        if not cmds:
+            return 0
+
+        rc, o, e = await self._lifecycle_cmd_status(cmds)
+        if config_key == "cleanup-cmd" and rc:
+            log = self.logger.warning
+        elif config_key == "cleanup-cmd" and (o or e):
+            log = self.logger.info
+        else:
+            log = self.logger.debug
+        log(
+            "%s: lifecycle stage %s %s: %s",
+            self,
+            state.number,
+            config_key,
+            cmd_error(rc, o, e),
+        )
+        return rc
 
     def has_run_cmd(self) -> bool:
         return any(stage.has_startup for stage in self.lifecycle_stages)
@@ -571,7 +582,7 @@ class NodeMixin:
         """Check readiness for a lifecycle stage."""
         states = self.stage_states if state is None else (state,)
         for current in states:
-            if await self._run_stage_hook(current, "ready-cmd"):
+            if await self._async_shebang_cmd(current, "ready-cmd"):
                 return False
         return True
 
@@ -592,7 +603,7 @@ class NodeMixin:
         for state in reversed(self.stage_states):
             if state.entered and (state.stage.cleanup_cmd or "").strip():
                 try:
-                    result = await self._run_stage_hook(state, "cleanup-cmd")
+                    result = await self._async_shebang_cmd(state, "cleanup-cmd")
                 except Exception:
                     self.logger.warning(
                         "%s: lifecycle stage %s cleanup failed",
@@ -1641,8 +1652,8 @@ class L3ContainerNode(L3NodeMixin, LinuxNamespace):
         return self.container_pid if self.cmd_p is not None else None
 
     def _prepare_container_args(self, stage, hook, name, mounts):
-        args, script = self._prepare_lifecycle_args(
-            stage, hook, name, configdir=self.unet.config_dirname
+        args, script = self._shebang_prep(
+            hook, stage, name, configdir=self.unet.config_dirname
         )
         if script:
             destination = f"/tmp/{script.name}"
@@ -1811,17 +1822,27 @@ class L3ContainerNode(L3NodeMixin, LinuxNamespace):
             log("%s: podman run exited with status %s", self, task.result())
 
     async def _async_delete(self):
+        self.logger.debug("%s: deleting", self)
         await self._finalize_lifecycle()
+
         if contid := self.container_id:
+            # Clear the container_id field so namespace commands work during teardown.
             self.container_id = None
             podman = get_exec_path_host("podman")
             for action in (["stop", "--time=2"], ["rm"]):
+                self.logger.debug("podman %s on container: %s", action[0], contid)
                 try:
-                    await self.async_cmd_status_nsonly([podman, *action, contid])
+                    rc, o, e = await self.async_cmd_status_nsonly(
+                        [podman, *action, contid], warn=False
+                    )
                 except Exception:
                     self.logger.warning(
                         "%s: error running podman %s", self, action[0], exc_info=True
                     )
+                    continue
+                log = self.logger.warning if rc else self.logger.debug
+                log("%s: podman %s: %s", self, action[0], cmd_error(rc, o, e))
+
             await self.async_cleanup_proc(self.container_p, self.container_pid)
 
         await super()._async_delete()
@@ -2050,21 +2071,20 @@ class L3QemuVM(L3NodeMixin, LinuxNamespace):
         if args:
             self.extra_mounts += args
 
-    def _run_guest_hook(self, stage, hook, name):
+    def _run_cmd(self, stage, config_key, script_name):
+        """Run the configured commands for this node inside VM."""
         if not self.launch_p or self.launch_p.returncode is not None or not self.conrepl:
             raise MunetError(f"{self}: QEMU guest console is unavailable")
 
-        body, shell, subst = self._lifecycle_script(stage, hook)
-        if not body:
+        cmds, cmdpath = self._shebang_prep(config_key, stage, script_name, console=True)
+        if not cmds:
             return 0
-        if subst:
-            body = config_subst(body, **self._lifecycle_context())
+        cmd = cmds[0]
 
-        repl = self.cmdrepl or self.conrepl
-        if shell:
-            path = self._write_lifecycle_script(name, body, shell)
-            guest_path = f"/tmp/{path.name}"
-            script = path.read_text(encoding="utf-8")
+        if cmdpath:
+            # Now write a copy inside the VM
+            guest_path = f"/tmp/{cmdpath.name}"
+            script = cmdpath.read_text(encoding="utf-8")
             eof = "MUNET_EOF"
             while eof in script.splitlines():
                 eof += "_"
@@ -2074,27 +2094,34 @@ class L3QemuVM(L3NodeMixin, LinuxNamespace):
             if not rc:
                 rc, output = self.conrepl.cmd_status(f"chmod 755 {guest_path}")
             if rc:
-                raise MunetError(f"{self}: cannot prepare guest script {name}: {output}")
-            body = guest_path
+                raise MunetError(
+                    f"{self}: cannot prepare guest script {script_name}: {output}"
+                )
+            cmd = guest_path
 
-        if not self.qemu_config.get("unix-os", True) and hook != "ready-cmd":
+        repl = self.cmdrepl or self.conrepl
+        if not self.qemu_config.get("unix-os", True) and config_key != "ready-cmd":
             # Network appliance consoles can take raw input without status syntax.
-            output = repl.run_command(body, timeout=120)
+            output = repl.run_command(cmd, timeout=120)
             rc = None
         else:
-            rc, output = repl.cmd_status(body, timeout=120)
+            rc, output = repl.cmd_status(cmd, timeout=120)
 
-        log = self.logger.warning if rc and hook == "cleanup-cmd" else self.logger.debug
-        log("%s: guest lifecycle %s returned %s: %s", self, name, rc, output)
+        log = (
+            self.logger.warning
+            if rc and config_key == "cleanup-cmd"
+            else self.logger.debug
+        )
+        log("%s: guest lifecycle %s returned %s: %s", self, script_name, rc, output)
         return rc
 
     async def _start_stage(self, state):
         if state.stage.has_startup:
-            self._run_guest_hook(state.stage, "cmd", self._stage_filename(state, "cmd"))
+            self._run_cmd(state.stage, "cmd", self._stage_filename(state, "cmd"))
 
-    async def _run_stage_hook(self, state, hook):
+    async def _async_shebang_cmd(self, state, hook):
         if (getattr(state.stage, hook.replace("-", "_")) or "").strip():
-            return self._run_guest_hook(
+            return self._run_cmd(
                 state.stage, hook, self._stage_filename(state, hook)
             )
         return 0
@@ -2108,7 +2135,7 @@ class L3QemuVM(L3NodeMixin, LinuxNamespace):
             )
             if stage.has_startup:
                 name = "initial-cmd-file" if (stage.cmd_file or "").strip() else "initial-cmd"
-                self._run_guest_hook(stage, "cmd", name)
+                self._run_cmd(stage, "cmd", name)
 
     def _use_command_console(self, use_stdio):
         return use_stdio and self.has_run_cmd()

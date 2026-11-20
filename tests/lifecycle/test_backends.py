@@ -187,6 +187,7 @@ async def test_qemu_initialization_stage_console_and_cleanup(
     with_ssh,
     disk_created,
 ):
+    direct_cleanup = 'stop-node "node argument" && echo $? > /tmp/cleanup-status'
     initial = tmp_path / "initial.sh"
     initial.write_text("#!/bin/sh\necho first-boot\n")
     node = make_node(
@@ -195,7 +196,7 @@ async def test_qemu_initialization_stage_console_and_cleanup(
             LifecycleStage(
                 cmd="echo kind", ready_cmd="test -f ready", cleanup_cmd="stop-kind"
             ),
-            LifecycleStage(shell=False, cleanup_cmd="stop-node"),
+            LifecycleStage(shell=False, cleanup_cmd=direct_cleanup),
         ],
         config={
             "connections": [],
@@ -272,7 +273,7 @@ async def test_qemu_initialization_stage_console_and_cleanup(
     finally:
         await node._async_delete()
     assert events[-1] == (active, "/tmp/cleanup-cmd.1.shebang")
-    assert (active, "stop-node") in events
+    assert (active, direct_cleanup) in events
     assert watcher.done()
 
 

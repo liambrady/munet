@@ -59,7 +59,7 @@ async def test_overlapping_cleanup_and_finalization_are_once(make_node, monkeypa
         return 0
 
     cleanup_proc = AsyncMock(wraps=node.async_cleanup_proc)
-    monkeypatch.setattr(node, "_run_stage_hook", run_hook)
+    monkeypatch.setattr(node, "_async_shebang_cmd", run_hook)
     monkeypatch.setattr(node, "async_cleanup_proc", cleanup_proc)
     caller = asyncio.create_task(node.async_cleanup_cmd())
     await asyncio.wait_for(entered_cleanup.wait(), 2)
