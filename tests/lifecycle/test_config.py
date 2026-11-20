@@ -93,7 +93,8 @@ async def test_build_uses_effective_kind(tmp_path):
         ("first", "{name: router, cmd: shadowed}"),
         (
             "second",
-            "{name: router, merge: [commands, cap-add], cmd: 'kind %NAME%', cap-add: [A]}",
+            "{name: router, merge: [commands, cap-add], "
+            "cmd: 'kind %NAME%', cap-add: [A]}",
         ),
     ):
         source = tmp_path / directory

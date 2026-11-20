@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Configuration and state for node lifecycle commands."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 
@@ -22,14 +24,13 @@ class LifecycleStage:
     cleanup_cmd: str | None = None
 
     @classmethod
-    def from_config(cls, config):
-        return cls(
-            **{
-                key: config[key.replace("_", "-")]
-                for key in cls.__dataclass_fields__
-                if key.replace("_", "-") in config
-            }
-        )
+    def from_config(cls, config, **context):
+        fields = {
+            key: config[key.replace("_", "-")]
+            for key in cls.__dataclass_fields__
+            if key.replace("_", "-") in config
+        }
+        return cls(**(config_subst(fields, **context) if context else fields))
 
     @property
     def has_startup(self):
@@ -41,6 +42,7 @@ class CmdProcess:
     """Local startup subprocess and its completion information."""
 
     proc: asyncio.subprocess.Process
+    stage_number: int
     pid: int | None = None
     task: asyncio.Task | None = None
     returncode: int | None = None
@@ -64,8 +66,7 @@ def resolve_lifecycle(node, kind, merged, **context):
     """
     if "commands" in kind.get("merge", []):
         stages = [
-            LifecycleStage.from_config(config_subst(source, **context))
-            for source in (kind, node)
+            LifecycleStage.from_config(source, **context) for source in (kind, node)
         ]
     else:
         stages = [LifecycleStage.from_config(merged)]
