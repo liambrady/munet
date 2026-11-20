@@ -7,6 +7,7 @@ import asyncio
 import logging
 
 from dataclasses import dataclass
+from dataclasses import fields
 from dataclasses import replace
 
 from .config import config_subst
@@ -25,12 +26,13 @@ class LifecycleStage:
 
     @classmethod
     def from_config(cls, config, **context):
-        fields = {
-            key: config[key.replace("_", "-")]
-            for key in cls.__dataclass_fields__
-            if key.replace("_", "-") in config
+        field_names = (field.name.replace("_", "-") for field in fields(cls))
+        values = {
+            name.replace("-", "_"): config[name]
+            for name in field_names
+            if name in config
         }
-        return cls(**(config_subst(fields, **context) if context else fields))
+        return cls(**(config_subst(values, **context) if context else values))
 
     @property
     def has_startup(self):

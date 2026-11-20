@@ -305,11 +305,11 @@ class NodeMixin:
         self.container_boot = container_boot
 
     def _lifecycle_context(self):
-        return dict(
-            name=self.name,
-            rundir=self.rundir,
-            configdir=getattr(self.unet, "config_dirname", ""),
-        )
+        return {
+            "name": self.name,
+            "rundir": self.rundir,
+            "configdir": getattr(self.unet, "config_dirname", ""),
+        }
 
     def _stage_filename(self, state, hook):
         if len(self.lifecycle_stages) == 1:
@@ -2073,7 +2073,11 @@ class L3QemuVM(L3NodeMixin, LinuxNamespace):
 
     def _run_cmd(self, stage, config_key, script_name):
         """Run the configured commands for this node inside VM."""
-        if not self.launch_p or self.launch_p.returncode is not None or not self.conrepl:
+        if (
+            not self.launch_p
+            or self.launch_p.returncode is not None
+            or not self.conrepl
+        ):
             raise MunetError(f"{self}: QEMU guest console is unavailable")
 
         cmds, cmdpath = self._shebang_prep(config_key, stage, script_name, console=True)
@@ -2119,10 +2123,10 @@ class L3QemuVM(L3NodeMixin, LinuxNamespace):
         if state.stage.has_startup:
             self._run_cmd(state.stage, "cmd", self._stage_filename(state, "cmd"))
 
-    async def _async_shebang_cmd(self, state, hook):
-        if (getattr(state.stage, hook.replace("-", "_")) or "").strip():
+    async def _async_shebang_cmd(self, state, config_key):
+        if (getattr(state.stage, config_key.replace("-", "_")) or "").strip():
             return self._run_cmd(
-                state.stage, hook, self._stage_filename(state, hook)
+                state.stage, config_key, self._stage_filename(state, config_key)
             )
         return 0
 
@@ -2134,7 +2138,11 @@ class L3QemuVM(L3NodeMixin, LinuxNamespace):
                 shell=self.config.get("shell"),
             )
             if stage.has_startup:
-                name = "initial-cmd-file" if (stage.cmd_file or "").strip() else "initial-cmd"
+                name = (
+                    "initial-cmd-file"
+                    if (stage.cmd_file or "").strip()
+                    else "initial-cmd"
+                )
                 self._run_cmd(stage, "cmd", name)
 
     def _use_command_console(self, use_stdio):
@@ -3238,11 +3246,11 @@ ff02::2\tip6-allrouters
             )
 
             config_to_dict_with_key(conf, "env", "name")
-            context = dict(
-                name=name,
-                rundir=os.path.join(self.rundir, name),
-                configdir=self.config_dirname,
-            )
+            context = {
+                "name": name,
+                "rundir": os.path.join(self.rundir, name),
+                "configdir": self.config_dirname,
+            }
             conf = config_subst(conf, **context)
             stages, container_boot = resolve_lifecycle(
                 node_conf, kind_conf, conf, **context
@@ -3596,17 +3604,16 @@ done""")
                 self.start_pcap(pcap, in_window=True)
 
         startup_tasks = []
-        first_error = None
+        startup_errors = []
 
         async def start_node(node):
-            nonlocal first_error
             try:
                 if launch := getattr(node, "launch", None):
                     await launch()
                 await node.run_cmd()
             except Exception as error:
-                if first_error is None:
-                    first_error = error
+                if not startup_errors:
+                    startup_errors.append(error)
                     for sibling in startup_tasks:
                         if sibling is not asyncio.current_task() and not sibling.done():
                             sibling.cancel()
@@ -3621,13 +3628,13 @@ done""")
         except BaseException as error:
             # A node failure has already cancelled its siblings. Joining them
             # without a second cancellation lets in-flight spawns finish.
-            if first_error is None:
+            if not startup_errors:
                 for task in startup_tasks:
                     if not task.done():
                         task.cancel()
             await asyncio.gather(*startup_tasks, return_exceptions=True)
-            if first_error is not None and error is not first_error:
-                raise first_error
+            if startup_errors and error is not startup_errors[0]:
+                raise startup_errors[0] from None
             raise
 
         return list(self.process_exit_tasks)
