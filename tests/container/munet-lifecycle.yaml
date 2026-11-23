@@ -1,0 +1,76 @@
+version: 1
+topology:
+  nodes:
+    - name: composed
+      kind: composed-container
+      cmd: exit 88
+      cmd-file: composed-start.sh
+      shell: /bin/bash
+      ready-cmd: test -f /node-ready
+      cleanup-cmd: kill -0 "$(cat /kind.pid)" && echo node >> /results/cleanup-order
+      volumes: ["%RUNDIR%/results:/results"]
+    - name: legacy
+      kind: legacy-container
+      cmd: echo follow-up
+      ready-cmd: grep -qx follow-up /results/cmd.2.out
+      volumes: ["%RUNDIR%:/results"]
+    - name: empty-boot
+      image: docker.io/labn/docker-ci-test:20.04
+      container-cmd: ""
+      podman:
+        extra-args: ['--entrypoint=["/bin/sh","-c","exec sleep 600"]']
+      cmd: echo image-default
+      ready-cmd: grep -qx image-default /results/cmd.out
+      volumes: ["%RUNDIR%:/results"]
+    - name: single
+      kind: single-container
+      shell: /bin/bash
+      ready-cmd: test -f /boot-ready
+    - name: ceos-test
+      kind: ceos
+      startup-config: ceos-startup.cfg
+      system-mac: "00:1c:73:11:22:33"
+
+kinds:
+  - name: composed-container
+    image: docker.io/labn/docker-ci-test:20.04
+    merge: [commands]
+    shell: /bin/sh
+    container-cmd: |
+      test -z "$BASH_VERSION" || exit 1
+      echo booted
+      touch /boot-ready
+      exec sleep 600
+    cmd: |
+      echo kind
+      echo "$$" > /kind.pid
+      touch /kind-ready
+      exec sleep 600
+    ready-cmd: test -f /boot-ready && test -f /kind-ready
+    cleanup-cmd: kill -0 "$(cat /kind.pid)" && echo kind >> /results/cleanup-order
+  - name: legacy-container
+    image: docker.io/labn/docker-ci-test:20.04
+    merge: [commands]
+    cmd: exit 88
+    cmd-file: legacy-boot.sh
+    ready-cmd: test -f /legacy-ready
+  - name: single-container
+    image: docker.io/labn/docker-ci-test:20.04
+    shell: /bin/sh
+    container-cmd: |
+      [[ -n "$BASH_VERSION" ]] || exit 1
+      echo merged-shell
+      touch /boot-ready
+      exec sleep 600
+  - name: ceos
+    image: docker.io/labn/docker-ci-test:20.04
+    init: false
+    shell: false
+    container-cmd: /sbin/init
+    env:
+      - name: INTFTYPE
+        value: eth
+    podman:
+      extra-args: ["--entrypoint=/observe-ceos.sh"]
+    volumes: ["%CONFIGDIR%/observe-ceos.sh:/observe-ceos.sh"]
+    ready-cmd: /usr/bin/test -f /ceos-ready
