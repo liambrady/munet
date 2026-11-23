@@ -1,0 +1,18 @@
+version: 1
+topology:
+  nodes:
+    - name: h-composed
+      kind: composed
+      cmd: |
+        test -f %RUNDIR%/kind-ready && echo node
+      cleanup-cmd: echo node >> %RUNDIR%/cleanup-order
+
+kinds:
+  - name: composed
+    merge: [commands]
+    cmd: |
+      echo kind
+      touch %RUNDIR%/kind-ready
+      exec sleep 60
+    ready-cmd: test -f %RUNDIR%/kind-ready
+    cleanup-cmd: echo kind >> %RUNDIR%/cleanup-order
