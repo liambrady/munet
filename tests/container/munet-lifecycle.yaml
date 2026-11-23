@@ -15,17 +15,26 @@ topology:
       ready-cmd: grep -qx follow-up /results/cmd.2.out
       volumes: ["%RUNDIR%:/results"]
     - name: empty-boot
-      image: docker.io/labn/docker-ci-test:20.04
+      kind: single-container
       container-cmd: ""
       podman:
         extra-args: ['--entrypoint=["/bin/sh","-c","exec sleep 600"]']
-      cmd: echo image-default
-      ready-cmd: grep -qx image-default /results/cmd.out
+      cmd-file: image-default.sh
+      ready-cmd: grep -qx empty-boot /results/cmd.out
       volumes: ["%RUNDIR%:/results"]
     - name: single
       kind: single-container
       shell: /bin/bash
       ready-cmd: test -f /boot-ready
+    - name: node-boot
+      kind: composed-container
+      shell: /bin/bash
+      container-cmd: |
+        [[ -n "$BASH_VERSION" ]] || exit 1
+        echo %NAME%
+        touch /boot-ready
+        exec sleep 600
+      volumes: ["%RUNDIR%/results:/results"]
     - name: ceos-test
       kind: ceos
       startup-config: ceos-startup.cfg
@@ -66,7 +75,7 @@ kinds:
     image: docker.io/labn/docker-ci-test:20.04
     init: false
     shell: false
-    container-cmd: /sbin/init
+    cmd: /sbin/init
     env:
       - name: INTFTYPE
         value: eth

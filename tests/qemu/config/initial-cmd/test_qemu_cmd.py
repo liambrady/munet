@@ -115,6 +115,8 @@ async def test_primary_console_and_existing_disk(unet):
     r2 = unet.hosts["r2"]
     assert r2.cmdrepl is None
     r2.conrepl.cmd_raises("test -f /root/foo -a -f /root/bar")
+    await r2.async_cleanup_cmd()
+    assert r2.conrepl.cmd_raises("cat /root/direct-cleanup") == "node argument"
 
     vm = unet.hosts["existing-disk"]
     assert vm.cmdrepl is None

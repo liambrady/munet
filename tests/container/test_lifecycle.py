@@ -13,6 +13,7 @@ async def test_container_lifecycles(unet_perfunc_share):
     assert (composed.rundir / "cmd.1.out").read_text() == "kind\n"
     assert (composed.rundir / "cmd.2.out").read_text() == "node\n"
     composed.cmd_raises('kill -0 "$(cat /kind.pid)"')
+    runtime = composed.cmd_p
 
     legacy = unet.hosts["legacy"]
     assert (legacy.rundir / "container.out").read_text() == "legacy-boot\n"
@@ -20,10 +21,13 @@ async def test_container_lifecycles(unet_perfunc_share):
     assert (legacy.rundir / "cmd.2.out").read_text() == "follow-up\n"
 
     image_default = unet.hosts["empty-boot"]
-    assert (image_default.rundir / "cmd.out").read_text() == "image-default\n"
+    assert (image_default.rundir / "cmd.out").read_text() == "empty-boot\n"
     assert (
         unet.hosts["single"].rundir / "container.out"
     ).read_text() == "merged-shell\n"
+    assert (
+        unet.hosts["node-boot"].rundir / "container.out"
+    ).read_text() == "node-boot\n"
 
     ceos = unet.hosts["ceos-test"]
     assert (ceos.rundir / "container.out").read_text().splitlines() == [
@@ -35,3 +39,4 @@ async def test_container_lifecycles(unet_perfunc_share):
 
     await unet.async_delete()
     assert (composed.rundir / "results/cleanup-order").read_text() == "node\nkind\n"
+    assert runtime.returncode is not None
