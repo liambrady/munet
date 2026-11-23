@@ -5,6 +5,7 @@ topology:
       kind: composed
       cmd: |
         test -f %RUNDIR%/kind-ready && echo node
+      ready-cmd: grep -qx node "%RUNDIR%/cmd.2.out"
       cleanup-cmd: echo node >> %RUNDIR%/cleanup-order
 
 kinds:
@@ -12,6 +13,7 @@ kinds:
     merge: [commands]
     cmd: |
       echo kind
+      echo "$$" > "%RUNDIR%/kind.pid"
       touch %RUNDIR%/kind-ready
       exec sleep 60
     ready-cmd: test -f %RUNDIR%/kind-ready
