@@ -7,13 +7,11 @@
 #
 "Testing of cmd and cmd-file config for L3NamespaceNode"
 
-import asyncio
 import logging
 
 import pytest
 
-# Await process watchers on the same loop as the module-scoped topology.
-pytestmark = pytest.mark.asyncio(loop_scope="module")
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.mark.parametrize(
@@ -23,7 +21,6 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 async def test_config_cmd(unet_share, host):
     unet = unet_share
     rn = unet.hosts[host]
-    await asyncio.wait_for(asyncio.shield(rn.cmd_procs[0].task), 5)
     output = rn.cmd_raises("cat cmd.out")
     logging.debug("expects to find 'foo' in cmd.out; Found: %s", output)
     assert "foo" in output
