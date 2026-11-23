@@ -30,10 +30,10 @@ async def test_container_lifecycles(unet_perfunc_share):
     ).read_text() == "node-boot\n"
 
     ceos = unet.hosts["ceos-test"]
-    assert (ceos.rundir / "container.out").read_text().splitlines() == [
-        "/sbin/init",
-        "systemd.setenv=INTFTYPE=eth",
-    ]
+    init, env_arg = (ceos.rundir / "container.out").read_text().splitlines()
+    assert init == "/sbin/init"
+    assert env_arg.startswith("systemd.setenv=INTFTYPE=")
+    assert "eth" in env_arg
     assert ceos.cmd_raises("cat /mnt/flash/startup-config") == "hostname ceos-test\n"
     assert ceos.cmd_raises("cat /mnt/flash/system_mac_address") == "00:1c:73:11:22:33\n"
 

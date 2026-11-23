@@ -229,17 +229,19 @@ async def test_stage_processes_finalize_concurrently(unet_perfunc_share, monkeyp
     entered = asyncio.Queue()
     release = asyncio.Event()
     cleanup_proc = node.async_cleanup_proc
+    stage_pids = {record.proc.pid for record in node.cmd_procs}
 
-    async def wait_then_cleanup(proc, pid):
-        entered.put_nowait(proc.pid)
-        await release.wait()
+    async def wait_then_cleanup(proc, pid=None):
+        if proc is not None and proc.pid in stage_pids:
+            entered.put_nowait(proc.pid)
+            await release.wait()
         return await cleanup_proc(proc, pid)
 
     monkeypatch.setattr(node, "async_cleanup_proc", wait_then_cleanup)
     finalizer = asyncio.create_task(node.async_delete())
     try:
-        pids = {await asyncio.wait_for(entered.get(), 2) for _ in node.cmd_procs}
-        assert pids == {record.proc.pid for record in node.cmd_procs}
+        pids = {await asyncio.wait_for(entered.get(), 2) for _ in stage_pids}
+        assert pids == stage_pids
         assert not finalizer.done()
     finally:
         release.set()
