@@ -22,6 +22,10 @@ def resolve(kind, node, name="r1"):
 
 
 def test_default_stage():
+    """Use one merged stage by default and skip startup with no command.
+
+    The node command overrides the kind's command and inherits its other settings.
+    """
     [empty] = resolve({}, {})
     assert not empty.has_startup
     kind = {"cmd": "kind", "shell": False, "ready-timeout": 10}
@@ -33,6 +37,10 @@ def test_default_stage():
 
 @pytest.mark.parametrize("name", ["r1", "r2"])
 def test_composed_stage_substitution(name):
+    """Resolve the kind stage first, then the node stage with its own settings.
+
+    Substitute each node's values without mutating the shared kind definition.
+    """
     kind = {
         "merge": ["commands"],
         "cmd": "kind %NAME%",
@@ -53,6 +61,7 @@ def test_composed_stage_substitution(name):
 
 
 def test_effective_kind_supplies_composed_command(tmp_path):
+    """Compose commands from the winning kind alongside ordinary merge rules."""
     for directory, contents in (
         ("first", "{name: router, cmd: shadowed}"),
         (

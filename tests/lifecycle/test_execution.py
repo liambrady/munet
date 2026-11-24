@@ -22,6 +22,7 @@ async def run_topology(unet):
 
 
 async def test_two_live_commands_and_independent_output(unet_perfunc_share):
+    """Keep both startup processes alive with separate logs and exit watchers."""
     kind_up = unet_perfunc_share.rundir / "kind-up"
     node_up = unet_perfunc_share.rundir / "node-up"
     node = unet_perfunc_share.add_l3_node(
@@ -53,6 +54,7 @@ async def test_two_live_commands_and_independent_output(unet_perfunc_share):
 async def test_exit_status_is_diagnostic_and_readiness_keeps_polling(
     unet_perfunc_share,
 ):
+    """Record a startup exit and keep polling before entering the next stage."""
     ready = unet_perfunc_share.rundir / "ready"
     checks = unet_perfunc_share.rundir / "checks"
     node = unet_perfunc_share.add_l3_node(
@@ -81,6 +83,7 @@ async def test_exit_status_is_diagnostic_and_readiness_keeps_polling(
 
 
 async def test_readiness_only_stage_and_inter_node_concurrency(unet_perfunc_share):
+    """Let another node advance while a readiness-only stage waits for it."""
     ready = unet_perfunc_share.rundir / "other-node-stage"
     node = unet_perfunc_share.add_l3_node(
         "r1",
@@ -101,6 +104,7 @@ async def test_readiness_only_stage_and_inter_node_concurrency(unet_perfunc_shar
 
 
 async def test_file_precedence_and_generic_cli_shell(unet_perfunc_share, tmp_path):
+    """Prefer cmd-file, substitute its contents, and preserve ordinary shells."""
     script = tmp_path / "startup.py"
     script.write_text(f"#!{sys.executable}\nprint('%NAME%')\n")
     node = unet_perfunc_share.add_l3_node(
@@ -132,6 +136,7 @@ async def test_file_precedence_and_generic_cli_shell(unet_perfunc_share, tmp_pat
 async def test_timeout_cancels_siblings_preserving_started_processes(
     unet_perfunc_share,
 ):
+    """Cancel sibling startup on a timeout and keep live processes for teardown."""
     gate = unet_perfunc_share.rundir / "checking"
     cancelled = unet_perfunc_share.rundir / "cancelled"
     node = unet_perfunc_share.add_l3_node(
@@ -166,6 +171,7 @@ async def test_timeout_cancels_siblings_preserving_started_processes(
 
 
 async def test_failed_dispatch_enters_stage(unet_perfunc_share):
+    """Record a failed stage as entered so it remains eligible for cleanup."""
     node = unet_perfunc_share.add_l3_node(
         "r1",
         lifecycle_stages=[
@@ -180,6 +186,7 @@ async def test_failed_dispatch_enters_stage(unet_perfunc_share):
 
 
 async def test_node_without_commands_returns_no_watchers(unet_perfunc_share):
+    """Mark a node with no commands ready and return an empty watcher list."""
     node = unet_perfunc_share.add_l3_node("r1")
     assert await run_topology(unet_perfunc_share) == []
     assert node.stage_states[0].ready
@@ -189,6 +196,7 @@ async def test_node_without_commands_returns_no_watchers(unet_perfunc_share):
 async def test_explicit_shell_overrides_file_shebang(
     unet_perfunc_share, tmp_path, shell
 ):
+    """Run a command file with the explicit shell setting despite a bad shebang."""
     script = tmp_path / "wrong-shebang"
     script.write_text("#!/no-such-interpreter\n/bin/echo override\n")
     node = unet_perfunc_share.add_l3_node(

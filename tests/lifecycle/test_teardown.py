@@ -10,17 +10,16 @@
 import asyncio
 import signal
 from unittest.mock import AsyncMock
-from unittest.mock import Mock
 
 import pytest
 
-from munet.base import BaseMunet
 from munet.lifecycle import LifecycleStage
 
 
 async def test_reverse_cleanup_continues_after_failed_hook(
     unet_perfunc_share, tmp_path, caplog
 ):
+    """Clean up entered stages once, even after startup and a cleanup hook fail."""
     order = tmp_path / "order"
     node = unet_perfunc_share.add_l3_node(
         "r1",
@@ -45,51 +44,58 @@ async def test_reverse_cleanup_continues_after_failed_hook(
 
 
 async def test_overlapping_cleanup_and_finalization_are_once(
-    unet_perfunc_share, monkeypatch
+    unet_perfunc_share, tmp_path, monkeypatch
 ):
+    """Run hooks in reverse order and stop the process once across callers."""
+    order = tmp_path / "order"
+    release = tmp_path / "release"
     node = unet_perfunc_share.add_l3_node(
         "r1",
         lifecycle_stages=[
-            LifecycleStage(cmd="exec sleep 60", cleanup_cmd="cleanup-first"),
-            LifecycleStage(cleanup_cmd="cleanup-second"),
+            LifecycleStage(cmd="exec sleep 60", cleanup_cmd=f"echo 1 >> {order}"),
+            LifecycleStage(
+                cleanup_cmd=f"echo 2 >> {order}\n"
+                f"while [ ! -f {release} ]; do sleep .01; done"
+            ),
         ],
     )
     await node.run_cmd()
-    entered_cleanup = asyncio.Event()
-    finish_cleanup = asyncio.Event()
-    cleanups = []
+    [record] = node.cmd_procs
 
-    async def run_hook(state, hook):
-        assert hook == "cleanup-cmd"
-        assert node.cmd_procs[0].proc.returncode is None
-        cleanups.append(state.number)
-        entered_cleanup.set()
-        await finish_cleanup.wait()
-        return 0
+    async def wait_for_cleanup():
+        while not order.exists():
+            await asyncio.sleep(0.01)
 
     cleanup_proc = AsyncMock(wraps=node.async_cleanup_proc)
-    monkeypatch.setattr(node, "_async_shebang_cmd", run_hook)
     monkeypatch.setattr(node, "async_cleanup_proc", cleanup_proc)
     caller = asyncio.create_task(node.async_cleanup_cmd())
-    await asyncio.wait_for(entered_cleanup.wait(), 2)
-    overlap = asyncio.create_task(node.async_cleanup_cmd())
-    caller.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await caller
-    finalizers = [asyncio.create_task(node._finalize_lifecycle()) for _ in range(2)]
-    await asyncio.sleep(0)
-    assert not overlap.done()
-    assert cleanup_proc.await_count == 0
-    finish_cleanup.set()
-    await asyncio.wait_for(asyncio.gather(overlap, *finalizers), 3)
-    assert cleanups == [2, 1]
+    tasks = [caller]
+    try:
+        await asyncio.wait_for(wait_for_cleanup(), 5)
+        overlap = asyncio.create_task(node.async_cleanup_cmd())
+        tasks.append(overlap)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        tasks.extend(asyncio.create_task(node._finalize_lifecycle()) for _ in range(2))
+        await asyncio.sleep(0)
+        assert not overlap.done()
+        assert record.proc.returncode is None
+        assert cleanup_proc.await_count == 0
+    finally:
+        release.touch()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+    for task in tasks[1:]:
+        task.result()
+    assert order.read_text() == "2\n1\n"
     assert cleanup_proc.await_count == 1
-    assert node.cmd_procs[0].returncode == -signal.SIGHUP
+    assert record.returncode == -signal.SIGHUP
 
 
 async def test_topology_cleanup_before_coverage_and_destruction(
     unet_perfunc_share, monkeypatch, tmp_path
 ):
+    """Run cleanup hooks before coverage and keep nodes alive until it ends."""
     hook = tmp_path / "cleanup"
     node = unet_perfunc_share.add_l3_node(
         "r1",
@@ -97,7 +103,7 @@ async def test_topology_cleanup_before_coverage_and_destruction(
             LifecycleStage(cmd="exec sleep 60", cleanup_cmd=f"touch {hook}")
         ],
     )
-    await unet_perfunc_share.run()
+    [watcher] = await unet_perfunc_share.run()
     events = []
 
     async def coverage():
@@ -105,31 +111,27 @@ async def test_topology_cleanup_before_coverage_and_destruction(
         assert node.cmd_p is not None
         events.append("coverage")
 
-    destroy_topology = BaseMunet._async_delete
+    async def coverage_finish():
+        assert events == ["coverage"]
+        assert not node.deleting
+        assert node.cmd_p is not None
+        events.append("coverage-finish")
 
-    async def destroy(unet):
-        assert events == ["coverage", "coverage-finish"]
-        await destroy_topology(unet)
-        events.append("destroy")
-
-    monkeypatch.setattr(
-        unet_perfunc_share,
-        "coverage_finish",
-        AsyncMock(side_effect=lambda: events.append("coverage-finish")),
-    )
-    options = Mock()
-    options.getoption.side_effect = lambda option: option == "--coverage"
-    monkeypatch.setattr(unet_perfunc_share, "cfgopt", options)
+    monkeypatch.setattr(unet_perfunc_share, "coverage_finish", coverage_finish)
+    monkeypatch.setattr(unet_perfunc_share.cfgopt.option, "coverage", True)
     monkeypatch.setattr(node, "gather_coverage_data", coverage, raising=False)
-    monkeypatch.setattr(BaseMunet, "_async_delete", destroy)
     await unet_perfunc_share.async_delete()
-    assert events == ["coverage", "coverage-finish", "destroy"]
+    assert events == ["coverage", "coverage-finish"]
+    assert node.deleting
+    assert unet_perfunc_share.hosts == {}
+    assert watcher.result() == -signal.SIGHUP
 
 
 @pytest.mark.parametrize("already_exited", [True, False])
 async def test_natural_exit_with_active_waiter(
     unet_perfunc_share, tmp_path, monkeypatch, already_exited
 ):
+    """Preserve a natural exit status before or during process cleanup."""
     release = tmp_path / "release"
     node = unet_perfunc_share.add_l3_node(
         "r1",
@@ -160,8 +162,9 @@ async def test_natural_exit_with_active_waiter(
 
 @pytest.mark.parametrize("cancel_watcher", [True, False])
 async def test_kill_escalation_preserves_exit_status(
-    unet_perfunc_share, tmp_path, monkeypatch, cancel_watcher
+    unet_perfunc_share, tmp_path, cancel_watcher
 ):
+    """Record SIGKILL after an ignored SIGHUP, even if the watcher was cancelled."""
     started = tmp_path / "started"
     node = unet_perfunc_share.add_l3_node(
         "r1",
@@ -174,16 +177,10 @@ async def test_kill_escalation_preserves_exit_status(
     )
     await node.run_cmd()
     [record] = node.cmd_procs
-    original = node.async_cleanup_pid
-
-    async def quicker_cleanup(*args, **kwargs):
-        return await original(*args, wait_sec=0.25, **kwargs)
-
-    monkeypatch.setattr(node, "async_cleanup_pid", quicker_cleanup)
     if cancel_watcher:
         record.task.cancel()
         await asyncio.gather(record.task, return_exceptions=True)
-    await asyncio.wait_for(node._finalize_lifecycle(), 3)
+    await asyncio.wait_for(node._finalize_lifecycle(), 40)
     assert record.returncode == record.proc.returncode == -signal.SIGKILL
     if not cancel_watcher:
         assert record.task.result() == -signal.SIGKILL
@@ -192,28 +189,29 @@ async def test_kill_escalation_preserves_exit_status(
 async def test_cleanup_timeout_does_not_discard_watcher(
     unet_perfunc_share, monkeypatch, caplog
 ):
+    """Log a cleanup timeout once and let the watcher report the eventual exit."""
     node = unet_perfunc_share.add_l3_node(
         "r1", lifecycle_stages=[LifecycleStage(cmd="exec sleep 60")]
     )
     await node.run_cmd()
     [record] = node.cmd_procs
-    cleanup_pid = node.async_cleanup_pid
     timeout = AsyncMock(side_effect=TimeoutError("simulated signal timeout"))
-    monkeypatch.setattr(node, "async_cleanup_pid", timeout)
     try:
-        await asyncio.wait_for(node._finalize_lifecycle(), 1)
-        await node._finalize_lifecycle()
-        assert timeout.await_count == 1
-        assert "SIGKILL timeout" in caplog.text
-        assert not record.task.done()
+        with monkeypatch.context() as patch:
+            patch.setattr(node, "async_cleanup_pid", timeout)
+            await asyncio.wait_for(node._finalize_lifecycle(), 1)
+            await node._finalize_lifecycle()
+            assert timeout.await_count == 1
+            assert "SIGKILL timeout" in caplog.text
+            assert not record.task.done()
     finally:
-        monkeypatch.setattr(node, "async_cleanup_pid", cleanup_pid)
         await node.async_cleanup_proc(record.proc, record.pid)
         await asyncio.wait_for(record.task, 2)
     assert record.returncode == record.task.result()
 
 
 async def test_alternate_nsenter_child_pid(unet_perfunc_share):
+    """Stop the nsenter child by its PID and preserve the watched exit status."""
     node = unet_perfunc_share.add_l3_node(
         "r1", lifecycle_stages=[LifecycleStage(cmd="exec sleep 60")]
     )
@@ -228,6 +226,7 @@ async def test_alternate_nsenter_child_pid(unet_perfunc_share):
 
 
 async def test_stage_processes_finalize_concurrently(unet_perfunc_share, monkeypatch):
+    """Start cleanup for both stage processes before allowing either to finish."""
     node = unet_perfunc_share.add_l3_node(
         "r1", lifecycle_stages=[LifecycleStage(cmd="exec sleep 60")] * 2
     )
